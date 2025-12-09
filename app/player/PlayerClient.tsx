@@ -25,6 +25,9 @@ export default function PlayerClient() {
   const [error, setError] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(true);
 
+  // 🔊 Volume atual (1 = 100%)
+  const [volume, setVolume] = useState(1);
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   // Carrega playlist oficial + músicas
@@ -61,9 +64,7 @@ export default function PlayerClient() {
           .eq('playlist', activePlaylist)
           .order('name', { ascending: true });
 
-        if (error) {
-          throw error;
-        }
+        if (error) throw error;
 
         setTracks(data || []);
         setCurrentIndex(0);
@@ -79,19 +80,24 @@ export default function PlayerClient() {
     load();
   }, [urlPlaylist]);
 
-  // Controla play/pause do áudio quando mudar faixa ou estado
+  // Controle de play/pause
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
     if (isPlaying) {
-      audio.play().catch(() => {
-        setIsPlaying(false);
-      });
+      audio.play().catch(() => setIsPlaying(false));
     } else {
       audio.pause();
     }
   }, [isPlaying, currentIndex]);
+
+  // 🔊 Aplica o volume ao elemento <audio>
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.volume = volume;
+  }, [volume]);
 
   const currentTrack = tracks[currentIndex];
 
@@ -112,8 +118,14 @@ export default function PlayerClient() {
 
   function handlePrev() {
     if (!tracks.length) return;
-    setCurrentIndex((prev) => (prev - 1 < 0 ? tracks.length - 1 : prev - 1));
+    setCurrentIndex((prev) =>
+      prev - 1 < 0 ? tracks.length - 1 : prev - 1
+    );
     setIsPlaying(true);
+  }
+
+  function handleVolumeChange(e: any) {
+    setVolume(Number(e.target.value));
   }
 
   // —— TELAS DE ESTADO —— //
@@ -140,10 +152,7 @@ export default function PlayerClient() {
           <div className="radio-error">
             <span>😕</span>
             <div>
-              <p>
-                {error ||
-                  'Nenhuma música ativa encontrada para esta playlist.'}
-              </p>
+              <p>{error || 'Nenhuma música ativa encontrada.'}</p>
               <small>
                 Playlist atual: <strong>{playlist}</strong>
               </small>
@@ -163,9 +172,7 @@ export default function PlayerClient() {
           <div>
             <p className="radio-chip">Player da loja</p>
             <h1 className="radio-title">Rádio Fórmula Foz</h1>
-            <p className="radio-sub">
-              Ambiente pronto para receber os clientes.
-            </p>
+            <p className="radio-sub">Ambiente pronto para receber os clientes.</p>
           </div>
 
           <div className="radio-pill">
@@ -189,29 +196,31 @@ export default function PlayerClient() {
           </div>
 
           <div className="radio-controls">
-            <button
-              type="button"
-              className="radio-btn ghost"
-              onClick={handlePrev}
-            >
+            <button className="radio-btn ghost" onClick={handlePrev}>
               ‹‹
             </button>
 
-            <button
-              type="button"
-              className="radio-btn primary"
-              onClick={handlePlayPause}
-            >
+            <button className="radio-btn primary" onClick={handlePlayPause}>
               {isPlaying ? 'Pausar' : 'Tocar'}
             </button>
 
-            <button
-              type="button"
-              className="radio-btn ghost"
-              onClick={handleNext}
-            >
+            <button className="radio-btn ghost" onClick={handleNext}>
               ››
             </button>
+          </div>
+
+          {/* 🔊 Controle de Volume */}
+          <div style={{ marginTop: '20px', textAlign: 'center' }}>
+            <p style={{ marginBottom: '6px', opacity: 0.8 }}>Volume</p>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={volume}
+              onChange={handleVolumeChange}
+              style={{ width: '80%' }}
+            />
           </div>
 
           <audio
@@ -222,9 +231,7 @@ export default function PlayerClient() {
 
           <div className="radio-footer">
             <div className="radio-dot" />
-            <span>
-              Reprodução contínua enquanto o navegador estiver aberto.
-            </span>
+            <span>Reprodução contínua enquanto o navegador estiver aberto.</span>
           </div>
         </div>
       </div>
