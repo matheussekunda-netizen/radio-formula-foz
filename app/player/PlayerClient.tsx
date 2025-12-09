@@ -1,7 +1,7 @@
 // app/player/PlayerClient.tsx
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, ChangeEvent } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { supabase } from '../../lib/supabase';
 
@@ -25,8 +25,8 @@ export default function PlayerClient() {
   const [error, setError] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(true);
 
-  // 🔊 Volume atual (1 = 100%)
-  const [volume, setVolume] = useState(1);
+  // 🔊 Volume em porcentagem (0–100)
+  const [volume, setVolume] = useState<number>(100);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -92,11 +92,11 @@ export default function PlayerClient() {
     }
   }, [isPlaying, currentIndex]);
 
-  // 🔊 Aplica o volume ao elemento <audio>
+  // 🔊 Aplica o volume (0–100 → 0–1)
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
-    audio.volume = volume;
+    audio.volume = volume / 100;
   }, [volume]);
 
   const currentTrack = tracks[currentIndex];
@@ -124,8 +124,10 @@ export default function PlayerClient() {
     setIsPlaying(true);
   }
 
-  function handleVolumeChange(e: any) {
-    setVolume(Number(e.target.value));
+  function handleVolumeChange(e: ChangeEvent<HTMLInputElement>) {
+    const value = Number(e.target.value);
+    if (Number.isNaN(value)) return;
+    setVolume(value);
   }
 
   // —— TELAS DE ESTADO —— //
@@ -172,7 +174,9 @@ export default function PlayerClient() {
           <div>
             <p className="radio-chip">Player da loja</p>
             <h1 className="radio-title">Rádio Fórmula Foz</h1>
-            <p className="radio-sub">Ambiente pronto para receber os clientes.</p>
+            <p className="radio-sub">
+              Ambiente pronto para receber os clientes.
+            </p>
           </div>
 
           <div className="radio-pill">
@@ -211,12 +215,14 @@ export default function PlayerClient() {
 
           {/* 🔊 Controle de Volume */}
           <div style={{ marginTop: '20px', textAlign: 'center' }}>
-            <p style={{ marginBottom: '6px', opacity: 0.8 }}>Volume</p>
+            <p style={{ marginBottom: '6px', opacity: 0.8 }}>
+              Volume: {volume}%
+            </p>
             <input
               type="range"
               min={0}
-              max={1}
-              step={0.01}
+              max={100}
+              step={1}
               value={volume}
               onChange={handleVolumeChange}
               style={{ width: '80%' }}
@@ -231,7 +237,9 @@ export default function PlayerClient() {
 
           <div className="radio-footer">
             <div className="radio-dot" />
-            <span>Reprodução contínua enquanto o navegador estiver aberto.</span>
+            <span>
+              Reprodução contínua enquanto o navegador estiver aberto.
+            </span>
           </div>
         </div>
       </div>
