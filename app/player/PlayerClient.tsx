@@ -1,7 +1,7 @@
 // app/player/PlayerClient.tsx
 'use client';
 
-import { useEffect, useRef, useState, ChangeEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { supabase } from '../../lib/supabase';
 
@@ -12,7 +12,7 @@ type Track = {
   type: string;
   active: boolean;
   playlist: string;
-  sort_order: number | null; // 👈 nova coluna
+  sort_order?: number | null; // nova coluna opcional
 };
 
 export default function PlayerClient() {
@@ -26,19 +26,24 @@ export default function PlayerClient() {
   const [error, setError] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(true);
 
-  // 🔊 Volume em porcentagem (0–100)
-  const [volume, setVolume] = useState<number>(100);
+  // 🔊 Volume (1 = 100%)
+  const [volume, setVolume] = useState(1);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // Carrega playlist oficial + músicas
+  // evita chamar handleEnded várias vezes no finzinho da música
+  const preEndCalledRef = useRef(false);
+
+  // ===========================
+  // 1) Carrega playlist + músicas
+  // ===========================
   useEffect(() => {
     async function load() {
       setLoading(true);
       setError(null);
 
       try {
-        // 1) descobrir qual playlist usar
+        // 1) Descobrir qual playlist usar
         let activePlaylist = urlPlaylist || '';
 
         if (!activePlaylist) {
@@ -57,13 +62,16 @@ export default function PlayerClient() {
 
         setPlaylist(activePlaylist);
 
-        // 2) buscar músicas dessa playlist
+        // 2) Buscar músicas dessa playlist
         const { data, error } = await supabase
           .from('tracks')
           .select('*')
           .eq('active', true)
           .eq('playlist', activePlaylist)
-          .order('sort_order', { ascending: true }); // 👈 agora respeita sua ordem
+          // primeiro ordena por sort_order (se tiver),
+          // depois por created_at pra manter consistência
+          .order('sort_order', { ascending: true })
+          .order('created_at', { ascending: true });
 
         if (error) throw error;
 
@@ -81,27 +89,40 @@ export default function PlayerClient() {
     load();
   }, [urlPlaylist]);
 
-  // Controle de play/pause
+  // ===========================
+  // 2) Controle de play / pause
+  // ===========================
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
     if (isPlaying) {
-      audio.play().catch(() => setIsPlaying(false));
+      audio.play().catch(() => {
+        // se der erro pra tocar (autoplay bloqueado, etc)
+        setIsPlaying(false);
+      });
     } else {
       audio.pause();
     }
+
+    // sempre que trocar de faixa / estado, libera o pré-fim novamente
+    preEndCalledRef.current = false;
   }, [isPlaying, currentIndex]);
 
-  // 🔊 Aplica o volume (0–100 → 0–1)
+  // ===========================
+  // 3) Aplica volume no <audio>
+  // ===========================
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
-    audio.volume = volume / 100;
+    audio.volume = volume;
   }, [volume]);
 
   const currentTrack = tracks[currentIndex];
 
+  // ===========================
+  // 4) Navegação entre faixas
+  // ===========================
   function handleEnded() {
     if (!tracks.length) return;
     setCurrentIndex((prev) => (prev + 1) % tracks.length);
@@ -125,21 +146,46 @@ export default function PlayerClient() {
     setIsPlaying(true);
   }
 
+  // ===========================
+  // 5) Volume slider
+  // ===========================
   function handleVolumeChange(e: ChangeEvent<HTMLInputElement>) {
-    const value = Number(e.target.value);
-    if (Number.isNaN(value)) return;
-    setVolume(value);
+    setVolume(Number(e.target.value));
   }
 
-  // —— TELAS DE ESTADO —— //
+  // ===========================
+  // 6) Pré-fim para troca sem pausa
+  // ===========================
+  function handleTimeUpdate() {
+    const audio = audioRef.current;
+    if (!audio || preEndCalledRef.current) return;
 
+    const duration = audio.duration;
+    const current = audio.currentTime;
+
+    if (!isFinite(duration) || duration === 0) return;
+
+    const timeLeft = duration - current;
+
+    // se faltar menos de 0.15s para acabar → troca antes
+    if (timeLeft <= 0.15) {
+      preEndCalledRef.current = true;
+      handleEnded();
+    }
+  }
+
+  // ===========================
+  // 7) Telas de estado
+  // ===========================
   if (loading) {
     return (
       <main className="radio-bg">
         <div className="radio-card">
           <p className="radio-chip">Carregando player…</p>
           <h1 className="radio-title">Rádio Fórmula Foz</h1>
-          <p className="radio-sub">Preparando a trilha sonora da loja.</p>
+          <p className="radio-sub">
+            Preparando a trilha sonora da loja.
+          </p>
         </div>
       </main>
     );
@@ -155,7 +201,10 @@ export default function PlayerClient() {
           <div className="radio-error">
             <span>😕</span>
             <div>
-              <p>{error || 'Nenhuma música ativa encontrada.'}</p>
+              <p>
+                {error ||
+                  'Nenhuma música ativa encontrada para esta playlist.'}
+              </p>
               <small>
                 Playlist atual: <strong>{playlist}</strong>
               </small>
@@ -166,8 +215,9 @@ export default function PlayerClient() {
     );
   }
 
-  // —— UI PRINCIPAL DO PLAYER —— //
-
+  // ===========================
+  // 8) UI principal do player
+  // ===========================
   return (
     <main className="radio-bg">
       <div className="radio-card">
@@ -201,29 +251,39 @@ export default function PlayerClient() {
           </div>
 
           <div className="radio-controls">
-            <button className="radio-btn ghost" onClick={handlePrev}>
+            <button
+              type="button"
+              className="radio-btn ghost"
+              onClick={handlePrev}
+            >
               ‹‹
             </button>
 
-            <button className="radio-btn primary" onClick={handlePlayPause}>
+            <button
+              type="button"
+              className="radio-btn primary"
+              onClick={handlePlayPause}
+            >
               {isPlaying ? 'Pausar' : 'Tocar'}
             </button>
 
-            <button className="radio-btn ghost" onClick={handleNext}>
+            <button
+              type="button"
+              className="radio-btn ghost"
+              onClick={handleNext}
+            >
               ››
             </button>
           </div>
 
           {/* 🔊 Controle de Volume */}
-          <div style={{ marginTop: '20px', textAlign: 'center' }}>
-            <p style={{ marginBottom: '6px', opacity: 0.8 }}>
-              Volume: {volume}%
-            </p>
+          <div style={{ marginTop: 20, textAlign: 'center' }}>
+            <p style={{ marginBottom: 6, opacity: 0.8 }}>Volume</p>
             <input
               type="range"
               min={0}
-              max={100}
-              step={1}
+              max={1}
+              step={0.01}
               value={volume}
               onChange={handleVolumeChange}
               style={{ width: '80%' }}
@@ -234,6 +294,7 @@ export default function PlayerClient() {
             ref={audioRef}
             src={currentTrack.url}
             onEnded={handleEnded}
+            onTimeUpdate={handleTimeUpdate}
           />
 
           <div className="radio-footer">
