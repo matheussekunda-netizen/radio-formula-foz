@@ -12,6 +12,7 @@ type Track = {
   type: string;
   active: boolean;
   playlist: string;
+  sort_order: number | null; // 👈 nova coluna
 };
 
 export default function PlayerClient() {
@@ -62,7 +63,7 @@ export default function PlayerClient() {
           .select('*')
           .eq('active', true)
           .eq('playlist', activePlaylist)
-          .order('name', { ascending: true });
+          .order('sort_order', { ascending: true }); // 👈 agora respeita sua ordem
 
         if (error) throw error;
 
