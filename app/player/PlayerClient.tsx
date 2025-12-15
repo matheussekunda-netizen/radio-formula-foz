@@ -1,4 +1,3 @@
-// app/player/PlayerClient.tsx
 'use client';
 
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
@@ -29,15 +28,20 @@ export default function PlayerClient() {
   // volume do usuário (0..1)
   const [volume, setVolume] = useState(1);
 
-  // ===== CROSSFADE =====
-  const CROSSFADE_SECONDS = 2.0; // 1.5 ~ 3.0 costuma ficar bom
+  // ===== CROSSFADE CONFIG =====
+  const CROSSFADE_SECONDS = 2.0;
 
+  // Dois audios
   const audioARef = useRef<HTMLAudioElement | null>(null);
   const audioBRef = useRef<HTMLAudioElement | null>(null);
-  const activeAudioRef = useRef<0 | 1>(0); // 0=A, 1=B
+
+  // 0 = A, 1 = B
+  const activeAudioRef = useRef<0 | 1>(0);
+
+  // evita disparar crossfade várias vezes
   const crossfadeTriggeredRef = useRef(false);
 
-  // WebAudio
+  // WebAudio graph
   const ctxRef = useRef<AudioContext | null>(null);
   const sourceARef = useRef<MediaElementAudioSourceNode | null>(null);
   const sourceBRef = useRef<MediaElementAudioSourceNode | null>(null);
@@ -81,10 +85,8 @@ export default function PlayerClient() {
 
         setTracks(data || []);
         setCurrentIndex(0);
-
-        // reset crossfade
-        crossfadeTriggeredRef.current = false;
         activeAudioRef.current = 0;
+        crossfadeTriggeredRef.current = false;
       } catch (err) {
         console.error(err);
         setError('Não foi possível carregar as músicas.');
@@ -100,45 +102,54 @@ export default function PlayerClient() {
   const currentTrack = tracks[currentIndex];
 
   // ===========================
-  // 2) Setup WebAudio Graph
+  // 2) WebAudio init (robusto)
   // ===========================
   function ensureAudioGraph() {
-    if (ctxRef.current) return;
-
-    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-    const ctx = new AudioCtx();
-    ctxRef.current = ctx;
-
     const a = audioARef.current;
     const b = audioBRef.current;
     if (!a || !b) return;
 
-    const sourceA = ctx.createMediaElementSource(a);
-    const sourceB = ctx.createMediaElementSource(b);
+    // se já existe grafo, ok
+    if (ctxRef.current && masterGainRef.current && gainARef.current && gainBRef.current && sourceARef.current && sourceBRef.current) {
+      return;
+    }
 
-    const gainA = ctx.createGain();
-    const gainB = ctx.createGain();
-    const master = ctx.createGain();
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
 
-    // estado inicial: A = 1, B = 0
-    gainA.gain.value = 1;
-    gainB.gain.value = 0;
-    master.gain.value = volume;
+    // só cria ctx quando tiver os <audio> (senão fica ctx “meio criado”)
+    const ctx = ctxRef.current ?? new AudioCtx();
+    ctxRef.current = ctx;
 
-    sourceA.connect(gainA);
-    sourceB.connect(gainB);
-    gainA.connect(master);
-    gainB.connect(master);
-    master.connect(ctx.destination);
+    // IMPORTANTE: MediaElementSource só pode ser criado 1x por elemento
+    if (!sourceARef.current) sourceARef.current = ctx.createMediaElementSource(a);
+    if (!sourceBRef.current) sourceBRef.current = ctx.createMediaElementSource(b);
 
-    sourceARef.current = sourceA;
-    sourceBRef.current = sourceB;
-    gainARef.current = gainA;
-    gainBRef.current = gainB;
-    masterGainRef.current = master;
+    if (!gainARef.current) gainARef.current = ctx.createGain();
+    if (!gainBRef.current) gainBRef.current = ctx.createGain();
+    if (!masterGainRef.current) masterGainRef.current = ctx.createGain();
+
+    // ganhos iniciais
+    gainARef.current.gain.value = 1;
+    gainBRef.current.gain.value = 0;
+    masterGainRef.current.gain.value = volume;
+
+    // reconecta tudo (seguro)
+    try {
+      sourceARef.current.disconnect();
+      sourceBRef.current.disconnect();
+      gainARef.current.disconnect();
+      gainBRef.current.disconnect();
+      masterGainRef.current.disconnect();
+    } catch {}
+
+    sourceARef.current.connect(gainARef.current);
+    sourceBRef.current.connect(gainBRef.current);
+    gainARef.current.connect(masterGainRef.current);
+    gainBRef.current.connect(masterGainRef.current);
+    masterGainRef.current.connect(ctx.destination);
   }
 
-  // aplica volume no master gain
+  // volume no master gain
   useEffect(() => {
     const ctx = ctxRef.current;
     const master = masterGainRef.current;
@@ -151,76 +162,42 @@ export default function PlayerClient() {
   }, [volume]);
 
   // ===========================
-  // 3) Start / Switch track (sem useEffect por currentIndex)
+  // 3) Troca “oficial” de música (quando muda currentIndex)
   // ===========================
-  async function playOnActive(index: number) {
-    if (!tracks.length) return;
+  useEffect(() => {
+    if (!currentTrack?.url) return;
 
     const a = audioARef.current;
     const b = audioBRef.current;
     if (!a || !b) return;
 
-    ensureAudioGraph();
+    crossfadeTriggeredRef.current = false;
 
-    const ctx = ctxRef.current;
-    if (ctx && ctx.state === 'suspended') {
-      try {
-        await ctx.resume();
-      } catch {}
-    }
+    ensureAudioGraph();
 
     const active = activeAudioRef.current;
     const activeEl = active === 0 ? a : b;
     const inactiveEl = active === 0 ? b : a;
 
-    // pausa o inativo (segurança)
+    // zera inativo
     inactiveEl.pause();
     inactiveEl.currentTime = 0;
 
-    crossfadeTriggeredRef.current = false;
-
-    // garante gains coerentes
-    const gainA = gainARef.current;
-    const gainB = gainBRef.current;
-    if (ctx && gainA && gainB) {
-      const now = ctx.currentTime;
-      gainA.gain.cancelScheduledValues(now);
-      gainB.gain.cancelScheduledValues(now);
-      if (active === 0) {
-        gainA.gain.setValueAtTime(1, now);
-        gainB.gain.setValueAtTime(0, now);
-      } else {
-        gainA.gain.setValueAtTime(0, now);
-        gainB.gain.setValueAtTime(1, now);
-      }
-    }
-
-    // seta src e toca
-    activeEl.src = tracks[index].url;
+    // carrega ativo
+    activeEl.pause();
     activeEl.currentTime = 0;
+    activeEl.src = currentTrack.url;
 
-    try {
-      await activeEl.play();
-      setIsPlaying(true);
-      setCurrentIndex(index);
-    } catch {
-      // autoplay bloqueado -> fica parado até clicar
-      setIsPlaying(false);
-      setCurrentIndex(index);
+    if (isPlaying) {
+      const ctx = ctxRef.current;
+      if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
+      activeEl.play().catch(() => setIsPlaying(false));
     }
-  }
+  }, [currentIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ao carregar tracks, tenta iniciar a primeira
-  useEffect(() => {
-    if (!tracks.length) return;
-
-    // tenta iniciar automaticamente
-    // (se o navegador bloquear, ele cai pra isPlaying=false e você clica Tocar)
-    playOnActive(0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tracks.length]);
-
-  // play/pause
+  // ===========================
+  // 4) Play/Pause
+  // ===========================
   useEffect(() => {
     const a = audioARef.current;
     const b = audioBRef.current;
@@ -241,12 +218,12 @@ export default function PlayerClient() {
   }, [isPlaying]);
 
   // ===========================
-  // 4) Crossfade real
+  // 5) Crossfade real
   // ===========================
-  function maybeCrossfade(fromEl: HTMLAudioElement) {
+  function maybeCrossfade() {
     if (!tracks.length) return;
-    if (!isPlaying) return;
     if (crossfadeTriggeredRef.current) return;
+    if (!isPlaying) return;
 
     const a = audioARef.current;
     const b = audioBRef.current;
@@ -256,10 +233,9 @@ export default function PlayerClient() {
 
     if (!a || !b || !ctx || !gainA || !gainB) return;
 
-    // só deixa o áudio "ativo" disparar crossfade
     const active = activeAudioRef.current;
     const activeEl = active === 0 ? a : b;
-    if (fromEl !== activeEl) return;
+    const inactiveEl = active === 0 ? b : a;
 
     const duration = activeEl.duration;
     const current = activeEl.currentTime;
@@ -272,90 +248,71 @@ export default function PlayerClient() {
 
       const nextIndex = (currentIndex + 1) % tracks.length;
       const nextTrack = tracks[nextIndex];
-      if (!nextTrack?.url) {
-        crossfadeTriggeredRef.current = false;
-        return;
-      }
+      if (!nextTrack?.url) return;
 
-      const inactiveEl = active === 0 ? b : a;
-
-      // prepara a próxima faixa no inativo
-      inactiveEl.src = nextTrack.url;
+      inactiveEl.pause();
       inactiveEl.currentTime = 0;
+      inactiveEl.src = nextTrack.url;
 
-      inactiveEl
-        .play()
-        .then(() => {
-          const now = ctx.currentTime;
+      inactiveEl.play().then(() => {
+        const now = ctx.currentTime;
 
-          const gActive = active === 0 ? gainA : gainB;
-          const gInactive = active === 0 ? gainB : gainA;
+        const gActive = active === 0 ? gainA : gainB;
+        const gInactive = active === 0 ? gainB : gainA;
 
-          gActive.gain.cancelScheduledValues(now);
-          gInactive.gain.cancelScheduledValues(now);
+        gActive.gain.cancelScheduledValues(now);
+        gInactive.gain.cancelScheduledValues(now);
 
-          // estado inicial garantido
-          gActive.gain.setValueAtTime(1, now);
-          gInactive.gain.setValueAtTime(0, now);
+        gActive.gain.setValueAtTime(gActive.gain.value, now);
+        gInactive.gain.setValueAtTime(gInactive.gain.value, now);
 
-          // crossfade
-          gActive.gain.linearRampToValueAtTime(0, now + CROSSFADE_SECONDS);
-          gInactive.gain.linearRampToValueAtTime(1, now + CROSSFADE_SECONDS);
+        gActive.gain.linearRampToValueAtTime(0, now + CROSSFADE_SECONDS);
+        gInactive.gain.linearRampToValueAtTime(1, now + CROSSFADE_SECONDS);
 
-          window.setTimeout(() => {
-            // pausa o antigo
-            activeEl.pause();
-            activeEl.currentTime = 0;
+        window.setTimeout(() => {
+          activeEl.pause();
+          activeEl.currentTime = 0;
 
-            // troca quem é o ativo
-            activeAudioRef.current = active === 0 ? 1 : 0;
+          activeAudioRef.current = active === 0 ? 1 : 0;
+          setCurrentIndex(nextIndex);
 
-            // atualiza UI
-            setCurrentIndex(nextIndex);
-
-            crossfadeTriggeredRef.current = false;
-          }, Math.max(0, CROSSFADE_SECONDS * 1000 - 30));
-        })
-        .catch(() => {
-          // fallback simples
           crossfadeTriggeredRef.current = false;
-          setCurrentIndex((prev) => (prev + 1) % tracks.length);
-          playOnActive((currentIndex + 1) % tracks.length);
-        });
+        }, Math.max(0, CROSSFADE_SECONDS * 1000 - 30));
+      }).catch(() => {
+        // fallback: troca normal
+        setCurrentIndex((prev) => (prev + 1) % tracks.length);
+        crossfadeTriggeredRef.current = false;
+      });
     }
   }
 
-  function handleTimeUpdateA() {
-    const a = audioARef.current;
-    if (a) maybeCrossfade(a);
-  }
-  function handleTimeUpdateB() {
-    const b = audioBRef.current;
-    if (b) maybeCrossfade(b);
+  function handleTimeUpdate() {
+    maybeCrossfade();
   }
 
-  // navegação manual
+  // ===========================
+  // 6) Controles
+  // ===========================
+  function handlePlayPause() {
+    // clique = gesto do usuário → libera/resume AudioContext
+    ensureAudioGraph();
+    const ctx = ctxRef.current;
+    if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
+    setIsPlaying((prev) => !prev);
+  }
+
   function handleNext() {
     if (!tracks.length) return;
     crossfadeTriggeredRef.current = false;
-    const next = (currentIndex + 1) % tracks.length;
-    playOnActive(next);
+    setCurrentIndex((prev) => (prev + 1) % tracks.length);
+    setIsPlaying(true);
   }
 
   function handlePrev() {
     if (!tracks.length) return;
     crossfadeTriggeredRef.current = false;
-    const prev = currentIndex - 1 < 0 ? tracks.length - 1 : currentIndex - 1;
-    playOnActive(prev);
-  }
-
-  function handlePlayPause() {
-    if (!isPlaying) {
-      ensureAudioGraph();
-      const ctx = ctxRef.current;
-      if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
-    }
-    setIsPlaying((prev) => !prev);
+    setCurrentIndex((prev) => (prev - 1 < 0 ? tracks.length - 1 : prev - 1));
+    setIsPlaying(true);
   }
 
   function handleVolumeChange(e: ChangeEvent<HTMLInputElement>) {
@@ -363,7 +320,7 @@ export default function PlayerClient() {
   }
 
   // ===========================
-  // Telas de estado
+  // 7) Telas de estado (igual)
   // ===========================
   if (loading) {
     return (
@@ -399,7 +356,7 @@ export default function PlayerClient() {
   }
 
   // ===========================
-  // UI principal (igual)
+  // 8) UI (igual) + 2 audios escondidos
   // ===========================
   return (
     <main className="radio-bg">
@@ -458,9 +415,9 @@ export default function PlayerClient() {
             />
           </div>
 
-          {/* Dois audios escondidos (crossfade real) */}
-          <audio ref={audioARef} onTimeUpdate={handleTimeUpdateA} />
-          <audio ref={audioBRef} onTimeUpdate={handleTimeUpdateB} />
+          {/* dois <audio> escondidos — com crossOrigin pra NÃO ficar mudo no WebAudio */}
+          <audio ref={audioARef} crossOrigin="anonymous" onTimeUpdate={handleTimeUpdate} />
+          <audio ref={audioBRef} crossOrigin="anonymous" onTimeUpdate={handleTimeUpdate} />
 
           <div className="radio-footer">
             <div className="radio-dot" />
